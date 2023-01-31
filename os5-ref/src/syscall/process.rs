@@ -8,6 +8,7 @@ use crate::task::{
 };
 use crate::timer::get_time_us;
 use alloc::sync::Arc;
+use riscv::register::hpmcounter10h::read;
 use crate::config::MAX_SYSCALL_NUM;
 
 #[repr(C)]
@@ -57,9 +58,7 @@ pub fn sys_fork() -> isize {
 
 /// Syscall Exec which accepts the elf path
 pub fn sys_exec(path: *const u8) -> isize {
-    let token = current_user_token();
-    let path = translated_str(token, path);
-    if let Some(data) = get_app_data_by_name(path.as_str()) {
+    if let Some(data) = read_elf_data(path) {
         let task = current_task().unwrap();
         task.exec(data);
         0
@@ -139,6 +138,21 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
 //
 // YOUR JOB: 实现 sys_spawn 系统调用
 // ALERT: 注意在实现 SPAWN 时不需要复制父进程地址空间，SPAWN != FORK + EXEC 
-pub fn sys_spawn(_path: *const u8) -> isize {
-    -1
+pub fn sys_spawn(path: *const u8) -> isize {
+    if let Some(data) = read_elf_data(path) {
+        let task = current_task().unwrap();
+        let child = task.spawn(data);
+        let child_pid = child.getpid();
+        add_task(child);
+        child_pid as isize
+    } else {
+        -1
+    }
+}
+
+// Read elf file in kernel, based on path from user space.
+fn read_elf_data(path: *const u8) -> Option<&'static [u8]> {
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    get_app_data_by_name(path.as_str())
 }
