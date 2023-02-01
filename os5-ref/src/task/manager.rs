@@ -47,7 +47,7 @@ pub struct StrideManager {
     queue: BinaryHeap<StrideManagerBlock>,
 }
 
-pub const BIG_STRIDE: usize = 100;
+pub const BIG_STRIDE: usize = usize::MAX;
 pub const PRIORITY_INIT: usize = 16;
 pub const PASS_INIT: usize = 0;
 
@@ -64,7 +64,7 @@ impl TaskManager for StrideManager {
         self.queue.pop().map(|wrapper| {
             let task = wrapper.task;
             let mut inner = task.inner_exclusive_access();
-            inner.pass += BIG_STRIDE / inner.priority;
+            inner.pass = inner.pass.wrapping_add(BIG_STRIDE / inner.priority);
             drop(inner);
             task
         })
@@ -90,7 +90,7 @@ pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
 /// so in comparison they seem "bigger"(>) than those with high pass values.
 struct StrideManagerBlock {
     pub task: Arc<TaskControlBlock>,
-    pub pass: usize,
+    pub pass: Pass,
 }
 
 impl PartialEq for StrideManagerBlock {
@@ -120,10 +120,44 @@ impl Ord for StrideManagerBlock {
 
 impl From<Arc<TaskControlBlock>> for StrideManagerBlock {
     fn from(value: Arc<TaskControlBlock>) -> Self {
-        let pass = value.inner_exclusive_access().pass;
+        let pass = Pass(value.inner_exclusive_access().pass);
         Self {
             task: value,
             pass,
+        }
+    }
+}
+
+struct Pass(pub usize);
+
+impl PartialEq for Pass {
+    // Assume no same pass value?
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for Pass {}
+
+impl PartialOrd for Pass {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Pass {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let diff = self.0.abs_diff(other.0);
+        if diff <= BIG_STRIDE / 2 {
+            // No overflow, simply compare
+            self.0.cmp(&other.0)
+        } else {
+            // There's one and only one that has overflowed
+            match self.0.cmp(&other.0) {
+                Ordering::Less => Ordering::Greater,
+                Ordering::Equal => Ordering::Equal, // Can't happen
+                Ordering::Greater => Ordering::Less,
+            }
         }
     }
 }
