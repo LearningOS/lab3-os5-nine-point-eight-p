@@ -1,14 +1,13 @@
 //! Process management syscalls
 
 use crate::loader::get_app_data_by_name;
-use crate::mm::{translated_refmut, translated_str, translated_byte_buffer};
+use crate::mm::{translated_refmut, translated_str, translated_byte_buffer, VirtAddr, MapPermission};
 use crate::task::{
     add_task, current_task, current_user_token, exit_current_and_run_next,
     suspend_current_and_run_next, TaskStatus,
 };
 use crate::timer::get_time_us;
 use alloc::sync::Arc;
-use riscv::register::hpmcounter10h::read;
 use crate::config::MAX_SYSCALL_NUM;
 
 #[repr(C)]
@@ -137,12 +136,46 @@ pub fn sys_set_priority(prio: isize) -> isize {
 }
 
 // YOUR JOB: 扩展内核以实现 sys_mmap 和 sys_munmap
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    -1
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
+    // Get virtual address
+    let start_va: VirtAddr = start.into();
+    let end_va: VirtAddr = (start + len).into(); // not aligned
+    // Check start
+    if start_va.aligned() == false {
+        return -1;
+    }
+    // Check port
+    let mask = 0x7;
+    if (port & !mask) != 0 || (port & mask) == 0 {
+        return -1;
+    }
+    let perm = MapPermission::U | MapPermission::from_bits(((port & mask) << 1) as u8).unwrap();
+    // Check length
+    if len == 0 {
+        return 0;
+    }
+    // Map
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.map_area(start_va, end_va, perm).map_or(-1, |_| 0)
 }
 
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    -1
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    // Get virtual address
+    let start_va: VirtAddr = start.into();
+    let end_va: VirtAddr = (start + len).into(); // not aligned
+    // Check start
+    if start_va.aligned() == false {
+        return -1;
+    }
+    // Check length
+    if len == 0 {
+        return 0;
+    }
+    // Unmap
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.unmap_area(start_va, end_va).map_or(-1, |_| 0)
 }
 
 //

@@ -83,7 +83,7 @@ impl KernelStack {
             kernel_stack_bottom.into(),
             kernel_stack_top.into(),
             MapPermission::R | MapPermission::W,
-        );
+        ).unwrap();
         KernelStack { pid: pid_handle.0 }
     }
     #[allow(unused)]
@@ -111,6 +111,6 @@ impl Drop for KernelStack {
         let kernel_stack_bottom_va: VirtAddr = kernel_stack_bottom.into();
         KERNEL_SPACE
             .exclusive_access()
-            .remove_area_with_start_vpn(kernel_stack_bottom_va.into());
+            .remove_area_with_start_vpn(kernel_stack_bottom_va.into()).unwrap();
     }
 }

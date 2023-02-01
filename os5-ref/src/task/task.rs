@@ -4,7 +4,8 @@ use super::TaskContext;
 use super::manager::{PRIORITY_INIT, PASS_INIT};
 use super::{pid_alloc, KernelStack, PidHandle};
 use crate::config::{TRAP_CONTEXT, MAX_SYSCALL_NUM};
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::error::OSResult;
+use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE, MapPermission};
 use crate::sync::UPSafeCell;
 use crate::syscall::TaskInfo;
 use crate::timer::get_time_us;
@@ -94,6 +95,14 @@ impl TaskControlBlockInner {
     pub fn increase_syscall_count(&mut self, syscall_id: usize) {
         let count = self.syscall_times.entry(syscall_id as u16).or_insert(0);
         *count += 1;
+    }
+    /// Map new area for current task.
+    pub fn map_area(&mut self, start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) -> OSResult {
+        self.memory_set.insert_framed_area(start_va, end_va, permission)
+    }
+    /// Map new area for current task.
+    pub fn unmap_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> OSResult {
+        self.memory_set.remove_framed_area(start_va, end_va)
     }
 }
 

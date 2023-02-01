@@ -30,6 +30,7 @@ extern crate alloc;
 #[macro_use]
 mod console;
 mod config;
+mod error;
 mod lang_items;
 mod loader;
 mod logging;
