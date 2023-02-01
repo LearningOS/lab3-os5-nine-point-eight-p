@@ -3,10 +3,13 @@
 use super::TaskContext;
 use super::manager::{PRIORITY_INIT, PASS_INIT};
 use super::{pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT;
+use crate::config::{TRAP_CONTEXT, MAX_SYSCALL_NUM};
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfo;
+use crate::timer::get_time_us;
 use crate::trap::{trap_handler, TrapContext};
+use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
@@ -45,12 +48,16 @@ pub struct TaskControlBlockInner {
     pub parent: Option<Weak<TaskControlBlock>>,
     /// A vector containing TCBs of all child processes of the current process
     pub children: Vec<Arc<TaskControlBlock>>,
+    /// It is set when active exit or execution error occurs
+    pub exit_code: i32,
     /// Priority in Stride algorithm
     pub priority: usize,
     /// Pass in Stride algorithm
     pub pass: usize,
-    /// It is set when active exit or execution error occurs
-    pub exit_code: i32,
+    /// The time when the task actually begins on a processor
+    pub init_time: usize,
+    /// Save syscall counts
+    pub syscall_times: BTreeMap<u16, u32>,
 }
 
 /// Simple access to its internal fields
@@ -66,11 +73,27 @@ impl TaskControlBlockInner {
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
+    pub fn get_task_info(&self) -> TaskInfo {
+        let mut count = [0u32; MAX_SYSCALL_NUM];
+        for (key, val) in self.syscall_times.iter() {
+            count[*key as usize] = *val;
+        }
+        let time = (get_time_us() - self.init_time) / 1000; // Convert us to ms
+        TaskInfo {
+            status: self.task_status,
+            syscall_times: count,
+            time,
+        }
+    }
     fn get_status(&self) -> TaskStatus {
         self.task_status
     }
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
+    }
+    pub fn increase_syscall_count(&mut self, syscall_id: usize) {
+        let count = self.syscall_times.entry(syscall_id as u16).or_insert(0);
+        *count += 1;
     }
 }
 
@@ -106,10 +129,12 @@ impl TaskControlBlock {
                     task_status: TaskStatus::Ready,
                     memory_set,
                     parent: None,
-                    priority: PRIORITY_INIT,
-                    pass: PASS_INIT,
                     children: Vec::new(),
                     exit_code: 0,
+                    priority: PRIORITY_INIT,
+                    pass: PASS_INIT,
+                    init_time: 0,
+                    syscall_times: BTreeMap::new(),
                 })
             },
         };
@@ -176,9 +201,11 @@ impl TaskControlBlock {
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
+                    exit_code: 0,
                     priority: PRIORITY_INIT,
                     pass: PASS_INIT,
-                    exit_code: 0,
+                    init_time: parent_inner.init_time,
+                    syscall_times: parent_inner.syscall_times.clone(),
                 })
             },
         });

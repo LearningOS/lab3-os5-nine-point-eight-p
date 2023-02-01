@@ -118,7 +118,10 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 
 // YOUR JOB: 引入虚地址后重写 sys_task_info
 pub fn sys_task_info(ti: *mut TaskInfo) -> isize {
-    -1
+    let task = current_task().unwrap();
+    let task_info = task.inner_exclusive_access().get_task_info();
+    copy_to_raw(ti, &task_info);
+    0
 }
 
 // YOUR JOB: 实现sys_set_priority，为任务添加优先级
