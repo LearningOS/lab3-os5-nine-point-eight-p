@@ -1,6 +1,7 @@
 //! Types related to task management & Functions for completely changing TCB
 
-use super::{TaskContext, INITPROC};
+use super::TaskContext;
+use super::manager::{PRIORITY_INIT, PASS_INIT};
 use super::{pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT;
 use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
@@ -45,9 +46,9 @@ pub struct TaskControlBlockInner {
     /// A vector containing TCBs of all child processes of the current process
     pub children: Vec<Arc<TaskControlBlock>>,
     /// Priority in Stride algorithm
-    // pub priority: usize,
+    pub priority: usize,
     /// Pass in Stride algorithm
-    // pub pass: usize,
+    pub pass: usize,
     /// It is set when active exit or execution error occurs
     pub exit_code: i32,
 }
@@ -105,6 +106,8 @@ impl TaskControlBlock {
                     task_status: TaskStatus::Ready,
                     memory_set,
                     parent: None,
+                    priority: PRIORITY_INIT,
+                    pass: PASS_INIT,
                     children: Vec::new(),
                     exit_code: 0,
                 })
@@ -173,6 +176,8 @@ impl TaskControlBlock {
                     memory_set,
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
+                    priority: PRIORITY_INIT,
+                    pass: PASS_INIT,
                     exit_code: 0,
                 })
             },
