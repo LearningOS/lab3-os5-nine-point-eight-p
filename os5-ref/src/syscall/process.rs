@@ -1,7 +1,7 @@
 //! Process management syscalls
 
 use crate::loader::get_app_data_by_name;
-use crate::mm::{translated_refmut, translated_str};
+use crate::mm::{translated_refmut, translated_str, translated_byte_buffer};
 use crate::task::{
     add_task, current_task, current_user_token, exit_current_and_run_next,
     suspend_current_and_run_next, TaskStatus,
@@ -105,14 +105,14 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 }
 
 // YOUR JOB: 引入虚地址后重写 sys_get_time
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    let _us = get_time_us();
-    // unsafe {
-    //     *ts = TimeVal {
-    //         sec: us / 1_000_000,
-    //         usec: us % 1_000_000,
-    //     };
-    // }
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    // Get time
+    let us = get_time_us();
+    let time = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    copy_to_raw(ts, &time);
     0
 }
 
@@ -162,4 +162,26 @@ fn read_elf_data(path: *const u8) -> Option<&'static [u8]> {
     let token = current_user_token();
     let path = translated_str(token, path);
     get_app_data_by_name(path.as_str())
+}
+
+/// Copy an object to a raw pointer under vm.
+fn copy_to_raw<T>(ptr: *mut T, object: &T)
+{
+    // Convert object into byte slice
+    let object_len = core::mem::size_of::<T>();
+    let object_slice = unsafe {
+        core::slice::from_raw_parts((object as *const _) as *const u8, object_len)
+    };
+    // Translate virtual address into physical addresses
+    let buffers = translated_byte_buffer(current_user_token(), ptr as *const u8, object_len);
+    // Copy to buffers
+    let mut pos = 0;
+    for buffer in buffers {
+        let copy_len = buffer.len().min(object_len - pos);
+        buffer[..copy_len].copy_from_slice(&object_slice[pos..(pos + copy_len)]);
+        pos += copy_len;
+        if object_len <= pos {
+            break;
+        }
+    }
 }
