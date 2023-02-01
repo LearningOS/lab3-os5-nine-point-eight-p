@@ -1,7 +1,7 @@
 //! Process management syscalls
 
 use crate::loader::get_app_data_by_name;
-use crate::mm::{translated_refmut, translated_str};
+use crate::mm::{translated_refmut, translated_str, translated_byte_buffer, VirtAddr, MapPermission};
 use crate::task::{
     add_task, current_task, current_user_token, exit_current_and_run_next,
     suspend_current_and_run_next, TaskStatus,
@@ -57,9 +57,7 @@ pub fn sys_fork() -> isize {
 
 /// Syscall Exec which accepts the elf path
 pub fn sys_exec(path: *const u8) -> isize {
-    let token = current_user_token();
-    let path = translated_str(token, path);
-    if let Some(data) = get_app_data_by_name(path.as_str()) {
+    if let Some(data) = read_elf_data(path) {
         let task = current_task().unwrap();
         task.exec(data);
         0
@@ -106,39 +104,120 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 }
 
 // YOUR JOB: 引入虚地址后重写 sys_get_time
-pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    let _us = get_time_us();
-    // unsafe {
-    //     *ts = TimeVal {
-    //         sec: us / 1_000_000,
-    //         usec: us % 1_000_000,
-    //     };
-    // }
+pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
+    // Get time
+    let us = get_time_us();
+    let time = TimeVal {
+        sec: us / 1_000_000,
+        usec: us % 1_000_000,
+    };
+    copy_to_raw(ts, &time);
     0
 }
 
 // YOUR JOB: 引入虚地址后重写 sys_task_info
 pub fn sys_task_info(ti: *mut TaskInfo) -> isize {
-    -1
+    let task = current_task().unwrap();
+    let task_info = task.inner_exclusive_access().get_task_info();
+    copy_to_raw(ti, &task_info);
+    0
 }
 
 // YOUR JOB: 实现sys_set_priority，为任务添加优先级
-pub fn sys_set_priority(_prio: isize) -> isize {
-    -1
+pub fn sys_set_priority(prio: isize) -> isize {
+    if prio >= 2 {
+        let task = current_task().unwrap();
+        let mut inner = task.inner_exclusive_access();
+        inner.priority = prio as usize;
+        prio
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: 扩展内核以实现 sys_mmap 和 sys_munmap
-pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    -1
+pub fn sys_mmap(start: usize, len: usize, port: usize) -> isize {
+    // Get virtual address
+    let start_va: VirtAddr = start.into();
+    let end_va: VirtAddr = (start + len).into(); // not aligned
+    // Check start
+    if start_va.aligned() == false {
+        return -1;
+    }
+    // Check port
+    let mask = 0x7;
+    if (port & !mask) != 0 || (port & mask) == 0 {
+        return -1;
+    }
+    let perm = MapPermission::U | MapPermission::from_bits(((port & mask) << 1) as u8).unwrap();
+    // Check length
+    if len == 0 {
+        return 0;
+    }
+    // Map
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.map_area(start_va, end_va, perm).map_or(-1, |_| 0)
 }
 
-pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    -1
+pub fn sys_munmap(start: usize, len: usize) -> isize {
+    // Get virtual address
+    let start_va: VirtAddr = start.into();
+    let end_va: VirtAddr = (start + len).into(); // not aligned
+    // Check start
+    if start_va.aligned() == false {
+        return -1;
+    }
+    // Check length
+    if len == 0 {
+        return 0;
+    }
+    // Unmap
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.unmap_area(start_va, end_va).map_or(-1, |_| 0)
 }
 
 //
 // YOUR JOB: 实现 sys_spawn 系统调用
 // ALERT: 注意在实现 SPAWN 时不需要复制父进程地址空间，SPAWN != FORK + EXEC 
-pub fn sys_spawn(_path: *const u8) -> isize {
-    -1
+pub fn sys_spawn(path: *const u8) -> isize {
+    if let Some(data) = read_elf_data(path) {
+        let task = current_task().unwrap();
+        let child = task.spawn(data);
+        let child_pid = child.getpid();
+        add_task(child);
+        child_pid as isize
+    } else {
+        -1
+    }
+}
+
+// Read elf file in kernel, based on path from user space.
+fn read_elf_data(path: *const u8) -> Option<&'static [u8]> {
+    let token = current_user_token();
+    let path = translated_str(token, path);
+    get_app_data_by_name(path.as_str())
+}
+
+/// Copy an object to a raw pointer under vm.
+fn copy_to_raw<T>(ptr: *mut T, object: &T)
+{
+    // Convert object into byte slice
+    let object_len = core::mem::size_of::<T>();
+    let object_slice = unsafe {
+        core::slice::from_raw_parts((object as *const _) as *const u8, object_len)
+    };
+    // Translate virtual address into physical addresses
+    let buffers = translated_byte_buffer(current_user_token(), ptr as *const u8, object_len);
+    // Copy to buffers
+    let mut pos = 0;
+    for buffer in buffers {
+        let copy_len = buffer.len().min(object_len - pos);
+        buffer[..copy_len].copy_from_slice(&object_slice[pos..(pos + copy_len)]);
+        pos += copy_len;
+        if object_len <= pos {
+            break;
+        }
+    }
 }

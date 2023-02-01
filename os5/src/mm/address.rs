@@ -199,6 +199,12 @@ where
     pub fn get_end(&self) -> T {
         self.r
     }
+    pub fn contains(&self, val: T) -> bool {
+        self.l <= val && val < self.r
+    }
+    pub fn overlaps(&self, other: Self) -> bool {
+        self.l < other.r && other.l < self.r
+    }
 }
 impl<T> IntoIterator for SimpleRange<T>
 where

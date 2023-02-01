@@ -1,11 +1,16 @@
 //! Types related to task management & Functions for completely changing TCB
 
 use super::TaskContext;
+use super::manager::{PRIORITY_INIT, PASS_INIT};
 use super::{pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::{TRAP_CONTEXT, MAX_SYSCALL_NUM};
+use crate::error::OSResult;
+use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE, MapPermission};
 use crate::sync::UPSafeCell;
+use crate::syscall::TaskInfo;
+use crate::timer::get_time_us;
 use crate::trap::{trap_handler, TrapContext};
+use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
@@ -46,6 +51,14 @@ pub struct TaskControlBlockInner {
     pub children: Vec<Arc<TaskControlBlock>>,
     /// It is set when active exit or execution error occurs
     pub exit_code: i32,
+    /// Priority in Stride algorithm
+    pub priority: usize,
+    /// Pass in Stride algorithm
+    pub pass: usize,
+    /// The time when the task actually begins on a processor
+    pub init_time: usize,
+    /// Save syscall counts
+    pub syscall_times: BTreeMap<u16, u32>,
 }
 
 /// Simple access to its internal fields
@@ -61,11 +74,35 @@ impl TaskControlBlockInner {
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
+    pub fn get_task_info(&self) -> TaskInfo {
+        let mut count = [0u32; MAX_SYSCALL_NUM];
+        for (key, val) in self.syscall_times.iter() {
+            count[*key as usize] = *val;
+        }
+        let time = (get_time_us() - self.init_time) / 1000; // Convert us to ms
+        TaskInfo {
+            status: self.task_status,
+            syscall_times: count,
+            time,
+        }
+    }
     fn get_status(&self) -> TaskStatus {
         self.task_status
     }
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
+    }
+    pub fn increase_syscall_count(&mut self, syscall_id: usize) {
+        let count = self.syscall_times.entry(syscall_id as u16).or_insert(0);
+        *count += 1;
+    }
+    /// Map new area for current task.
+    pub fn map_area(&mut self, start_va: VirtAddr, end_va: VirtAddr, permission: MapPermission) -> OSResult {
+        self.memory_set.insert_framed_area(start_va, end_va, permission)
+    }
+    /// Map new area for current task.
+    pub fn unmap_area(&mut self, start_va: VirtAddr, end_va: VirtAddr) -> OSResult {
+        self.memory_set.remove_framed_area(start_va, end_va)
     }
 }
 
@@ -103,6 +140,10 @@ impl TaskControlBlock {
                     parent: None,
                     children: Vec::new(),
                     exit_code: 0,
+                    priority: PRIORITY_INIT,
+                    pass: PASS_INIT,
+                    init_time: 0,
+                    syscall_times: BTreeMap::new(),
                 })
             },
         };
@@ -170,6 +211,10 @@ impl TaskControlBlock {
                     parent: Some(Arc::downgrade(self)),
                     children: Vec::new(),
                     exit_code: 0,
+                    priority: PRIORITY_INIT,
+                    pass: PASS_INIT,
+                    init_time: parent_inner.init_time,
+                    syscall_times: parent_inner.syscall_times.clone(),
                 })
             },
         });
@@ -183,6 +228,16 @@ impl TaskControlBlock {
         task_control_block
         // ---- release parent PCB automatically
         // **** release children PCB automatically
+    }
+    // Spawn a process (as init process's child?)
+    pub fn spawn(self: &Arc<TaskControlBlock>, elf_data: &[u8]) -> Arc<TaskControlBlock> {
+        // New task
+        let task_control_block = Arc::new(TaskControlBlock::new(elf_data));
+        // Add child
+        task_control_block.inner_exclusive_access().parent = Some(Arc::downgrade(self));
+        self.inner_exclusive_access().children.push(task_control_block.clone());
+        // Return
+        task_control_block
     }
     pub fn getpid(&self) -> usize {
         self.pid.0
